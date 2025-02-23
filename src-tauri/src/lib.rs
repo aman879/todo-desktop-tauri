@@ -1,39 +1,46 @@
-pub mod commands;
-pub mod models;
-pub mod utils;
+use std::sync::Arc;
+use tauri::Manager;
+use tokio::sync::Mutex;
+use sqlx::Sqlite;
+use sqlx::migrate::MigrateDatabase;
 
-use crate::models::file_data::FileData;
-use crate::utils::json_handler::get_json_path;
-use std::{fs::{self, File}, io::Write};
+mod commands;
+mod utils;
+
+use commands::commands::{get_task, add_task, delete_task, debug_terminal};
+use utils::database::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_handle = app.handle();
-            let path = get_json_path(&app_handle);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("Failed to create app data directory");
-            }
+            let handle = app.handle().clone();
+            let path = handle.path().app_data_dir().expect("Failed to get app dir").join("tasks.db");
+            tauri::async_runtime::spawn(async move {
+                let db_path = path.to_str().unwrap();
 
-            if !path.exists() {
-                let mut file = File::create(&path).expect("Failed to create JSON file");
-                let default_data = FileData::new();
-                let json_string = serde_json::to_string_pretty(&default_data)
-                    .expect("Failed to serialize default FileData");
-
-                file.write_all(json_string.as_bytes())
-                    .expect("Failed to write to JSON file");
-            }
+                if !Sqlite::database_exists(&db_path).await.unwrap_or(false) {
+                    Sqlite::create_database(&db_path).await.unwrap();
+                } else {
+                    println!("database exists");
+                }
+                
+                match Database::new(&db_path).await {
+                    Ok(db) => {
+                        handle.manage(Arc::new(Mutex::new(db)));
+                        println!("Database initialized successfully!");
+                    }
+                    Err(e) => eprintln!("Failed to initialize database: {:?}", e),
+                }
+            });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::tasks::debug_terminal,
-            commands::tasks::get_task,
-            commands::tasks::add_task,
-            commands::tasks::delete_task,
+            get_task,
+            add_task,
+            delete_task,
+            debug_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
